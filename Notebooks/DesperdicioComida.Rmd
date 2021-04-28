@@ -1,0 +1,165 @@
+---
+title: |
+  [1]: https://www.facebook.com/An%C3%A1lisis-y-visualizaci%C3%B3n-de-datos-100602148375744
+  [2]: https://raw.githubusercontent.com/DataFeast71/COVID19_plots/main/img/Logo_W.jpeg {width=1in}
+  [![Análisis Y visualización][2]][1]
+  Desperdicio de Comida en el mundo.
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: null
+    df_print: paged
+    highlight: zenburn
+    theme: sandstone
+---
+
+<style>
+.tocify-extend-page {
+  height: 0 !important;
+}
+</style>
+
+```{r, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, fig.align = "center")
+```
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(networkD3)
+library(plotly)
+library(shiny)
+```
+
+La alimentación es parte fundamental del ser humano y cada año se producen millones de toneladas de comida para consumo humano. Según la FAO (Fondo de la ONU para la Alimentación y la Agricultura), se pierden 1300 millones de toneladas de comida al año, lo cual resulta impactante ya que según datos de la ONU una de cada nueve personas en el mundo sufre de hambre.
+
+En esta ocasión exploramos datos relacionados a la alimentación en el mundo y específicamente al desperdicio de comida. Los datos que se utilizaron para el siguiente análisis se descargaron de la página de la [Organización de comida y agricultura de las Naciones Unidas](http://www.fao.org/platform-food-loss-waste/flw-data/en/), la cual contiene el porcentaje de comida desperdiciada de diferentes cultivos a lo largo de los años en distintos países.
+
+Usaremos estos datos para representar como se ha desperdiciado la comida en un año en específico. El set de datos presenta 18754 observaciones y 22 columnas, sin embargo, no todas son necesarias. Las variables que se ocuparon para este análisis son:
+
+* **País**
+* **Cultivo**
+* **Año**
+* **Cadena de producción**
+* **Pérdida o desperdicio** en porcentajes
+
+Algo importante en estos datos es que no es constante el registro de la información de los países en cada año, por lo cual el que no se vean representados varios países en distintos años (o en ningún año) no quiere decir que no exista el desperdicio de comida en esa nación. Lo otro que cabe resaltar acerca de los datos es que la variable de **Perdida o desperdicio** se encuentra representada en porcentaje, y aunque nos ayuda a comparar entre diferentes países, sería muy interesante conocer la cantidad neta a la que se refiere, para tener una mejor perspectiva de cuantas toneladas representan estas pérdidas en ciertos alimentos. 
+
+```{r data-preparation, message=FALSE, warning=FALSE}
+## Food loss
+food_raw <- read.csv("Dataset/Data_All.csv", header = TRUE, stringsAsFactors = FALSE)
+# typo correction in fsc_location1
+food_raw$fsc_location1 <- ifelse(food_raw$fsc_location1 == "Havest","Harvest",food_raw$fsc_location1) 
+food_raw$fsc_location1 <- ifelse(food_raw$fsc_location1 == "Trader","Traders",food_raw$fsc_location1) 
+supplychain <- c("Pre-Harvest","Harvest","Grading","Storage",
+                 "Transport","Traders","Processing","Packaging",
+                 "Distribution","Wholesale","Retail","Consumer",
+                 "Export", "Farm", "Restaurants", "Market")
+# Selection
+food_raw <- food_raw %>% 
+  filter(fsc_location1 %in% supplychain)
+
+## Basket class
+basket <- read.csv("Dataset/Crops_Basket.csv", header = TRUE, stringsAsFactors = FALSE)
+# Add basket class and remove duplicates
+food_raw <- food_raw %>% 
+  select(country, crop, loss_per_clean, fsc_location1, timepointyears) %>%
+  left_join(basket, by = "crop") %>% 
+  distinct()
+```
+
+Mediante un gráfico de “*Boxplot*”, similar al de la página de la [FAO](http://www.fao.org/platform-food-loss-waste/flw-data/en/), podemos ver cómo ha sido el desperdicio de alimentos en los diferentes pasos de la cadena de producción. En este gráfico los datos corresponden desde el año 2000 al año 2017:
+
+```{r}
+p <- food_raw %>% 
+  filter(between(timepointyears, 2000, 2018)) %>% 
+ggplot(aes(x = fsc_location1, y = loss_per_clean, fill = fsc_location1)) +
+  geom_boxplot(alpha=0.3, outlier.shape = NA) +
+  geom_point( aes(text = sprintf("Pais: %s<br>Cultivo: %s<br>Año: %s", country, crop, timepointyears))) +
+   xlab("") + 
+   ylab("Percentage loss (%)") +
+   theme(axis.text.x=element_text(angle = 45)) +
+   theme(legend.title = element_blank()) +
+   labs(caption = "Data source: http://www.fao.org/platform-food-loss-waste/flw-data/en/") +
+  theme_bw() +
+  theme(
+    #Legend
+    legend.position = "none",
+    #axis
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+```{r}
+div(ggplotly(p), align="center")
+```
+
+Si bien este gráfico nos da información de que en qué parte de la cadena de producción de alimentos se pierde más alimento, también surgen preguntas como ¿Qué tipos de alimentos son los que más se desperdician en cada país? ¿Qué cultivos son los que más se desperdician en ciertos países? y ¿Qué país es el que más desperdicia comida aparentemente?  
+
+Para abordar estas preguntas, aprovechamos un tipo de visualización llamada “diagrama de Sankey” que permite ver un “flujo” de la información en diferentes aspectos y las ramificaciones que puede tener. Para el “diagrama de Sankey” seleccionamos un año en particular, por ejemplo 2016, ya que es el último año en el que hay información acerca del desperdicio de comida en México.
+
+```{r}
+# Function to prepare the data for sankey diagram.
+sankey_data <- function(df, link1, link2) {
+  # Make the links
+  links1 <- df %>% 
+  group_by(Class, get(link1)) %>% 
+  summarise(loss = sum(loss_per_clean)) %>% 
+  ungroup() 
+  names(links1) <- c("source", "target","loss")
+
+  links2 <- df %>% 
+  group_by(get(link1), get(link2)) %>% 
+  summarise(loss = sum(loss_per_clean)) %>% 
+  ungroup() 
+
+  names(links2) <- c("source", "target","loss")
+  
+  links <- rbind(links1, links2)
+  
+  # From these flows we need to create a node data frame: it lists every entities involved in the flow
+  nodes <- data.frame(
+    name = c(as.character(links$source),
+             as.character(links$target)) %>% unique()
+    )
+  
+  # With networkD3, connection must be provided using id, not using real name like in the links dataframe.. So we need to reformat it.
+  links$IDsource <- match(links$source, nodes$name)-1 
+  links$IDtarget <- match(links$target, nodes$name)-1
+  
+  return(list(links = links, nodes = nodes))
+}
+```
+
+Se realizó un primer diagrama relacionando el desperdicio de comida por canasta, cultivo y país:
+
+```{r}
+food_year <- food_raw %>%  filter(timepointyears == 2016)
+
+network <- sankey_data(df = food_year, link1 = "crop", link2 = "country")
+
+# Make the Network
+p <- sankeyNetwork(Links = network$links, Nodes = network$nodes,
+              Source = "IDsource", Target = "IDtarget",
+              Value = "loss", NodeID = "name", 
+              sinksRight=FALSE, fontSize = 10, units = "%")
+div(p, align = "center")
+```
+
+En esta representación podemos observar que México registró pérdida/desperdicio en tomate, maíz y frijol en ese año, mientras que países como Honduras y Guatemala registraron perdida/desperdicio en maíz y frijol, o Perú y Ecuador donde el mayor desperdicio fue en papas. 
+
+El otro análisis en el cual podemos emplear el “diagrama de Sankey” es observar las conexiones entre el tipo de alimento que se perdió/desperdició y en que parte de la cadena de producción en donde se registro. Con esto podemos observar cual fue el punto donde hubo mayor desperdicio: 
+
+```{r}
+network <- sankey_data(df = food_year, link1 = "fsc_location1", link2 = "country")
+
+# Make the Network
+p <- sankeyNetwork(Links = network$links, Nodes = network$nodes,
+              Source = "IDsource", Target = "IDtarget",
+              Value = "loss", NodeID = "name", 
+              sinksRight=FALSE, fontSize = 10, units = "%")
+div(p, align = "center")
+```
+
+Con este análisis podemos observar que, durante el 2016, en el caso de México la mayor pérdida de alimento es durante el procesamiento, cosecha, distribución y almacenamiento, mientras que en Reino Unido la mayor perdida es durante la cosecha.
+
+Si quieres explorar más esta información acerca de los puntos en la cadena de producción de alimentos, y que tipo de alimentos son los que se pierden más en ciertos países, puedes visitar nuestra [app en Shiny](https://datafeast71.shinyapps.io/Food-waste-world-country/) en donde puedes seleccionar la información de acuerdo al año en el cual te encuentres interesado y el país.

@@ -1,0 +1,9 @@
+# Don't track content of these folders
+.Rproj.user/
+Food_lossv2/rsconnect
+
+
+# Compiled source #
+###################
+.Rhistory
+Food_Loss.Rproj
